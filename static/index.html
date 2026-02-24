@@ -5,8 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PotholePulse — Urban Road Intelligence</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<!-- Leaflet core -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Marker Clustering -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<!-- Heatmap -->
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <style>
   :root {
     --bg-primary: #0a0c10;
@@ -19,6 +26,7 @@
     --green: #2dd881;
     --yellow: #ffc142;
     --red: #ff4757;
+    --blue: #4a9eff;
     --text-primary: #e8eaf0;
     --text-secondary: #7a8194;
     --text-muted: #4a5168;
@@ -39,111 +47,59 @@
 
   .app { display: flex; flex-direction: column; height: 100vh; }
 
-  /* ─── Header ─── */
   .header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 24px;
-    border-bottom: 1px solid var(--border);
-    background: rgba(10, 12, 16, 0.95);
-    backdrop-filter: blur(20px);
-    z-index: 1000;
-    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+    background: rgba(10, 12, 16, 0.95); backdrop-filter: blur(20px);
+    z-index: 1000; flex-shrink: 0;
   }
-
   .logo { display: flex; align-items: center; gap: 10px; }
-
   .logo-icon {
-    width: 34px; height: 34px;
-    background: var(--accent);
-    border-radius: 9px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px;
+    width: 34px; height: 34px; background: var(--accent); border-radius: 9px;
+    display: flex; align-items: center; justify-content: center; font-size: 16px;
     box-shadow: 0 0 16px var(--accent-glow);
   }
-
-  .logo-text {
-    font-family: 'Space Mono', monospace;
-    font-weight: 700; font-size: 16px; letter-spacing: -0.5px;
-  }
+  .logo-text { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 16px; letter-spacing: -0.5px; }
   .logo-text span { color: var(--accent); }
-
   .header-stats { display: flex; gap: 24px; font-size: 12px; color: var(--text-secondary); }
   .header-stat strong { color: var(--text-primary); font-weight: 600; margin-right: 3px; }
-
   .header-right { display: flex; align-items: center; gap: 10px; }
-
-  .source-badge {
-    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px;
-    padding: 4px 10px; border-radius: 4px;
-  }
+  .source-badge { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; padding: 4px 10px; border-radius: 4px; }
   .source-web { background: rgba(45, 216, 129, 0.12); color: var(--green); }
   .source-ios { background: rgba(255, 92, 53, 0.12); color: var(--accent); }
 
-  /* ─── Main Layout ─── */
-  .main {
-    display: grid;
-    grid-template-columns: 360px 1fr;
-    flex: 1;
-    overflow: hidden;
-  }
+  .main { display: grid; grid-template-columns: 360px 1fr; flex: 1; overflow: hidden; }
 
-  /* ─── Sidebar ─── */
   .sidebar {
-    border-right: 1px solid var(--border);
-    display: flex; flex-direction: column;
-    background: var(--bg-secondary);
-    overflow: hidden;
-    z-index: 999;
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    background: var(--bg-secondary); overflow: hidden; z-index: 999;
   }
-
-  .sidebar-section {
-    padding: 16px 18px;
-    border-bottom: 1px solid var(--border);
-  }
-
+  .sidebar-section { padding: 16px 18px; border-bottom: 1px solid var(--border); }
   .section-title {
-    font-family: 'Space Mono', monospace;
-    font-size: 10px; text-transform: uppercase;
-    letter-spacing: 1.5px; color: var(--text-muted);
-    margin-bottom: 12px;
+    font-family: 'Space Mono', monospace; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 1.5px; color: var(--text-muted); margin-bottom: 12px;
   }
 
-  /* ─── Tabs ─── */
   .tab-bar { display: flex; gap: 0; }
-
   .tab-btn {
-    flex: 1; padding: 10px; font-size: 12px; font-weight: 500;
-    font-family: 'Outfit', sans-serif;
+    flex: 1; padding: 10px; font-size: 12px; font-weight: 500; font-family: 'Outfit', sans-serif;
     background: transparent; border: none; border-bottom: 2px solid transparent;
     color: var(--text-muted); cursor: pointer; transition: all 0.2s;
   }
   .tab-btn:hover { color: var(--text-secondary); }
   .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-
   .tab-content { display: none; }
   .tab-content.active { display: block; }
 
-  /* ─── Form ─── */
   .form-group { margin-bottom: 12px; }
-  .form-group label {
-    display: block; font-size: 11px; font-weight: 500;
-    color: var(--text-secondary); margin-bottom: 5px;
-  }
+  .form-group label { display: block; font-size: 11px; font-weight: 500; color: var(--text-secondary); margin-bottom: 5px; }
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-
   input, select, textarea {
-    width: 100%; padding: 9px 12px;
-    background: var(--bg-primary); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); color: var(--text-primary);
-    font-family: 'Outfit', sans-serif; font-size: 13px;
-    outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+    width: 100%; padding: 9px 12px; background: var(--bg-primary); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text-primary); font-family: 'Outfit', sans-serif;
+    font-size: 13px; outline: none; transition: border-color 0.2s, box-shadow 0.2s;
   }
-  input:focus, select:focus, textarea:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-subtle);
-  }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
   textarea { resize: vertical; min-height: 50px; }
   select {
     cursor: pointer; appearance: none;
@@ -152,29 +108,20 @@
   }
 
   .btn {
-    padding: 9px 16px; border: none; border-radius: var(--radius-sm);
-    font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 600;
-    cursor: pointer; transition: all 0.2s;
+    padding: 9px 16px; border: none; border-radius: var(--radius-sm); font-family: 'Outfit', sans-serif;
+    font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s;
     display: inline-flex; align-items: center; gap: 5px;
   }
-  .btn-primary {
-    background: var(--accent); color: white;
-    box-shadow: 0 2px 12px var(--accent-glow);
-  }
+  .btn-primary { background: var(--accent); color: white; box-shadow: 0 2px 12px var(--accent-glow); }
   .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 20px var(--accent-glow); }
-  .btn-secondary {
-    background: var(--bg-elevated); color: var(--text-secondary);
-    border: 1px solid var(--border);
-  }
+  .btn-secondary { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border); }
   .btn-secondary:hover { color: var(--text-primary); }
   .btn-sm { padding: 6px 10px; font-size: 11px; }
   .form-actions { display: flex; gap: 6px; }
 
-  /* ─── API Console ─── */
   .api-console {
-    background: var(--bg-primary); border-radius: var(--radius-sm);
-    padding: 10px; font-family: 'Space Mono', monospace;
-    font-size: 10.5px; color: var(--text-muted);
+    background: var(--bg-primary); border-radius: var(--radius-sm); padding: 10px;
+    font-family: 'Space Mono', monospace; font-size: 10.5px; color: var(--text-muted);
     max-height: 120px; overflow-y: auto; line-height: 1.7;
     scrollbar-width: thin; scrollbar-color: var(--bg-elevated) transparent;
   }
@@ -184,89 +131,60 @@
   .api-console .status-err { color: var(--red); }
   .api-console .timestamp { color: var(--text-muted); }
 
-  /* ─── Filters ─── */
   .filter-bar { display: flex; gap: 5px; flex-wrap: wrap; }
   .filter-chip {
-    padding: 4px 10px; font-size: 10px; font-weight: 500;
-    border-radius: 20px; border: 1px solid var(--border);
-    background: transparent; color: var(--text-secondary);
+    padding: 4px 10px; font-size: 10px; font-weight: 500; border-radius: 20px;
+    border: 1px solid var(--border); background: transparent; color: var(--text-secondary);
     cursor: pointer; transition: all 0.2s;
   }
   .filter-chip:hover { border-color: var(--accent); color: var(--text-primary); }
   .filter-chip.active { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent); }
 
-  /* ─── Pothole List ─── */
-  .pothole-list {
-    flex: 1; overflow-y: auto; padding: 10px 18px;
-    scrollbar-width: thin; scrollbar-color: var(--bg-elevated) transparent;
-  }
-
+  .pothole-list { flex: 1; overflow-y: auto; padding: 10px 18px; scrollbar-width: thin; scrollbar-color: var(--bg-elevated) transparent; }
   .pothole-item {
-    padding: 12px; background: var(--bg-card);
-    border: 1px solid var(--border); border-radius: var(--radius);
-    margin-bottom: 6px; cursor: pointer; transition: all 0.2s;
+    padding: 12px; background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 6px; cursor: pointer; transition: all 0.2s;
     animation: slideIn 0.3s ease;
   }
-  @keyframes slideIn {
-    from { opacity: 0; transform: translateX(-10px); }
-    to { opacity: 1; transform: translateX(0); }
-  }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
   .pothole-item:hover { border-color: rgba(255, 92, 53, 0.2); background: var(--bg-elevated); }
   .pothole-item.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
-
   .pothole-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
   .pothole-id { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--accent); }
-
-  .severity-badge {
-    font-size: 9px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.8px; padding: 2px 7px; border-radius: 4px;
-  }
+  .severity-badge { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; padding: 2px 7px; border-radius: 4px; }
   .severity-low { background: rgba(45, 216, 129, 0.12); color: var(--green); }
   .severity-medium { background: rgba(255, 193, 66, 0.12); color: var(--yellow); }
   .severity-high { background: rgba(255, 71, 87, 0.12); color: var(--red); }
-
-  .pothole-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 3px; }
   .pothole-coords { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--text-muted); }
   .pothole-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
   .pothole-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
   .pothole-time { font-size: 10px; color: var(--text-muted); }
-
   .empty-state { text-align: center; padding: 32px 16px; color: var(--text-muted); }
   .empty-state .icon { font-size: 32px; margin-bottom: 10px; }
   .empty-state p { font-size: 12px; line-height: 1.5; }
 
-  /* ─── Map ─── */
   .map-area { position: relative; overflow: hidden; }
-
   #map { width: 100%; height: 100%; z-index: 1; }
 
-  /* Dark Leaflet tiles override */
   .leaflet-tile-pane { filter: invert(1) hue-rotate(200deg) brightness(0.8) contrast(1.1) saturate(0.3); }
-  .leaflet-control-zoom a {
-    background: var(--bg-card) !important; color: var(--text-secondary) !important;
-    border-color: var(--border) !important;
-  }
+  .leaflet-control-zoom a { background: var(--bg-card) !important; color: var(--text-secondary) !important; border-color: var(--border) !important; }
   .leaflet-control-zoom a:hover { background: var(--bg-elevated) !important; color: var(--text-primary) !important; }
   .leaflet-control-attribution { display: none; }
 
-  /* Custom marker styles injected via JS */
-  .pothole-marker {
-    border-radius: 50%;
-    border: 2px solid;
-    box-shadow: 0 0 12px rgba(0,0,0,0.4);
-    transition: transform 0.2s;
-  }
+  .pothole-marker { border-radius: 50%; border: 2px solid; box-shadow: 0 0 12px rgba(0,0,0,0.4); transition: transform 0.2s; }
   .pothole-marker:hover { transform: scale(1.3); }
   .pothole-marker.low { background: rgba(45, 216, 129, 0.3); border-color: #2dd881; }
   .pothole-marker.medium { background: rgba(255, 193, 66, 0.3); border-color: #ffc142; }
   .pothole-marker.high { background: rgba(255, 71, 87, 0.3); border-color: #ff4757; }
 
-  /* Custom popup */
-  .leaflet-popup-content-wrapper {
-    background: var(--bg-card) !important; color: var(--text-primary) !important;
-    border: 1px solid var(--border) !important; border-radius: var(--radius) !important;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5) !important;
-  }
+  .marker-cluster-small { background-color: rgba(45, 216, 129, 0.25) !important; }
+  .marker-cluster-small div { background-color: rgba(45, 216, 129, 0.6) !important; color: #fff !important; font-family: 'Space Mono', monospace !important; font-weight: 700 !important; }
+  .marker-cluster-medium { background-color: rgba(255, 193, 66, 0.25) !important; }
+  .marker-cluster-medium div { background-color: rgba(255, 193, 66, 0.6) !important; color: #fff !important; font-family: 'Space Mono', monospace !important; font-weight: 700 !important; }
+  .marker-cluster-large { background-color: rgba(255, 71, 87, 0.25) !important; }
+  .marker-cluster-large div { background-color: rgba(255, 71, 87, 0.6) !important; color: #fff !important; font-family: 'Space Mono', monospace !important; font-weight: 700 !important; }
+
+  .leaflet-popup-content-wrapper { background: var(--bg-card) !important; color: var(--text-primary) !important; border: 1px solid var(--border) !important; border-radius: var(--radius) !important; box-shadow: 0 8px 32px rgba(0,0,0,0.5) !important; }
   .leaflet-popup-tip { background: var(--bg-card) !important; }
   .leaflet-popup-content { margin: 12px 14px !important; font-family: 'Outfit', sans-serif !important; }
   .popup-id { color: var(--accent); font-family: 'Space Mono', monospace; font-size: 12px; margin-bottom: 4px; }
@@ -275,35 +193,71 @@
   .popup-info { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
   .popup-actions { margin-top: 8px; display: flex; gap: 6px; }
 
-  /* Map overlay */
-  .map-overlay {
-    position: absolute; z-index: 999; pointer-events: none;
-  }
-  .map-overlay > * { pointer-events: auto; }
-
   .map-legend {
     position: absolute; top: 16px; left: 16px; z-index: 999;
     background: rgba(24, 28, 38, 0.92); backdrop-filter: blur(16px);
-    border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 14px 18px; min-width: 200px;
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px; min-width: 200px;
   }
-  .map-legend h3 {
-    font-size: 13px; font-weight: 600; margin-bottom: 10px;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .map-legend h3::before {
-    content: ''; width: 7px; height: 7px;
-    background: var(--accent); border-radius: 50%;
-    box-shadow: 0 0 8px var(--accent-glow);
-    animation: pulse 2s infinite;
-  }
+  .map-legend h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .map-legend h3::before { content: ''; width: 7px; height: 7px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 8px var(--accent-glow); animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-
   .legend { display: flex; flex-direction: column; gap: 5px; }
   .legend-item { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-secondary); }
   .legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 
-  /* ─── Responsive ─── */
+  .layer-controls {
+    position: absolute; top: 16px; right: 16px; z-index: 999;
+    background: rgba(24, 28, 38, 0.92); backdrop-filter: blur(16px);
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px;
+  }
+  .layer-toggle {
+    display: flex; align-items: center; gap: 10px; padding: 6px 0; cursor: pointer;
+    font-size: 12px; color: var(--text-secondary); transition: color 0.2s; user-select: none;
+  }
+  .layer-toggle:hover { color: var(--text-primary); }
+  .layer-toggle input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; padding: 0; }
+  .layer-toggle .layer-icon { width: 20px; text-align: center; flex-shrink: 0; }
+
+  .gps-btn {
+    position: absolute; bottom: 100px; right: 16px; z-index: 999;
+    width: 44px; height: 44px; background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 20px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; transition: all 0.2s; backdrop-filter: blur(10px);
+  }
+  .gps-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+  .gps-btn.active { color: var(--blue); border-color: var(--blue); box-shadow: 0 0 12px rgba(74, 158, 255, 0.3); }
+  .gps-btn.active::after {
+    content: ''; position: absolute; inset: -3px; border: 2px solid var(--blue);
+    border-radius: 10px; animation: gpsPulse 2s infinite;
+  }
+  @keyframes gpsPulse { 0%,100% { opacity: 0.6; transform: scale(1); } 50% { opacity: 0; transform: scale(1.15); } }
+
+  .nearby-alert {
+    position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 999;
+    background: rgba(255, 71, 87, 0.15); border: 1px solid rgba(255, 71, 87, 0.4);
+    border-radius: var(--radius); padding: 12px 20px; backdrop-filter: blur(16px);
+    display: none; align-items: center; gap: 10px; font-size: 13px; font-weight: 500;
+    box-shadow: 0 4px 24px rgba(255, 71, 87, 0.2); animation: alertSlide 0.3s ease; white-space: nowrap;
+  }
+  .nearby-alert.visible { display: flex; }
+  @keyframes alertSlide { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+  .nearby-alert .alert-icon { font-size: 18px; }
+  .nearby-alert .alert-count { color: var(--red); font-weight: 700; }
+  .nearby-alert .alert-dismiss { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; margin-left: 8px; }
+
+  .tile-switcher {
+    position: absolute; bottom: 24px; right: 16px; z-index: 999; display: flex; gap: 4px;
+    background: rgba(24, 28, 38, 0.92); backdrop-filter: blur(16px);
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px;
+  }
+  .tile-btn {
+    padding: 6px 12px; font-size: 10px; font-weight: 600; font-family: 'Outfit', sans-serif;
+    background: transparent; border: none; border-radius: 6px; color: var(--text-muted);
+    cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .tile-btn:hover { color: var(--text-secondary); }
+  .tile-btn.active { background: var(--bg-elevated); color: var(--text-primary); }
+
   @media (max-width: 900px) {
     .main { grid-template-columns: 1fr; }
     .sidebar { position: absolute; left: 0; top: 0; width: 100%; height: 50%; z-index: 998; }
@@ -332,14 +286,12 @@
 
   <div class="main">
     <aside class="sidebar">
-      <!-- Tabs -->
       <div class="tab-bar">
         <button class="tab-btn active" data-tab="report">📡 Report</button>
         <button class="tab-btn" data-tab="console">⚡ Console</button>
         <button class="tab-btn" data-tab="swift">🍎 Swift</button>
       </div>
 
-      <!-- Tab: Report -->
       <div class="tab-content active" id="tab-report">
         <div class="sidebar-section">
           <form id="potholeForm">
@@ -373,7 +325,6 @@
         </div>
       </div>
 
-      <!-- Tab: Console -->
       <div class="tab-content" id="tab-console">
         <div class="sidebar-section" style="flex:1;">
           <div class="api-console" id="apiConsole" style="max-height: 200px;">
@@ -382,7 +333,6 @@
         </div>
       </div>
 
-      <!-- Tab: Swift Integration -->
       <div class="tab-content" id="tab-swift">
         <div class="sidebar-section">
           <div class="section-title">SmartDriveAR Integration</div>
@@ -432,7 +382,6 @@ class PotholeReporter {
         </div>
       </div>
 
-      <!-- Filters -->
       <div class="sidebar-section">
         <div class="section-title">Filter</div>
         <div class="filter-bar">
@@ -444,7 +393,6 @@ class PotholeReporter {
         </div>
       </div>
 
-      <!-- Pothole List -->
       <div class="pothole-list" id="potholeList">
         <div class="empty-state">
           <div class="icon">🕳️</div>
@@ -453,80 +401,107 @@ class PotholeReporter {
       </div>
     </aside>
 
-    <!-- Map -->
     <div class="map-area">
       <div id="map"></div>
+
       <div class="map-legend">
         <h3>Live Map</h3>
         <div class="legend">
           <div class="legend-item"><div class="legend-dot" style="background:#2dd881"></div> Low severity</div>
           <div class="legend-item"><div class="legend-dot" style="background:#ffc142"></div> Medium severity</div>
           <div class="legend-item"><div class="legend-dot" style="background:#ff4757"></div> High / Critical</div>
-          <div class="legend-item"><div class="legend-dot" style="background:var(--accent);"></div> 📱 iOS detected</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#4a9eff"></div> Your location</div>
         </div>
+      </div>
+
+      <div class="layer-controls">
+        <div class="section-title" style="margin-bottom:6px;">Layers</div>
+        <label class="layer-toggle"><input type="checkbox" id="layerMarkers" checked><span class="layer-icon">📍</span> Markers</label>
+        <label class="layer-toggle"><input type="checkbox" id="layerClusters"><span class="layer-icon">🔘</span> Clusters</label>
+        <label class="layer-toggle"><input type="checkbox" id="layerHeatmap"><span class="layer-icon">🔥</span> Heatmap</label>
+      </div>
+
+      <button class="gps-btn" id="gpsBtn" onclick="toggleGPS()" title="Track my location">◎</button>
+
+      <div class="nearby-alert" id="nearbyAlert">
+        <span class="alert-icon">⚠️</span>
+        <span><span class="alert-count" id="nearbyCount">0</span> potholes within 100m</span>
+        <button class="alert-dismiss" onclick="dismissAlert()">✕</button>
+      </div>
+
+      <div class="tile-switcher">
+        <button class="tile-btn active" data-tile="dark" onclick="switchTile('dark')">Dark</button>
+        <button class="tile-btn" data-tile="street" onclick="switchTile('street')">Street</button>
+        <button class="tile-btn" data-tile="satellite" onclick="switchTile('satellite')">Satellite</button>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-// ══════════════════════════════════════════════════
-//  CONFIG
-// ══════════════════════════════════════════════════
 const API_BASE = window.location.origin;
-const DEFAULT_CENTER = [31.320, 73.380]; // Pattoki
+const DEFAULT_CENTER = [31.320, 73.380];
 const DEFAULT_ZOOM = 14;
+const NEARBY_RADIUS_M = 100;
+const SEVERITY_COLORS = { low: '#2dd881', medium: '#ffc142', high: '#ff4757' };
+const SEVERITY_WEIGHT = { low: 0.3, medium: 0.6, high: 1.0 };
 
-const SEVERITY_COLORS = {
-  low: '#2dd881',
-  medium: '#ffc142',
-  high: '#ff4757'
-};
-
-// ══════════════════════════════════════════════════
-//  STATE
-// ══════════════════════════════════════════════════
 let potholes = [];
-let markers = {};
 let activeFilter = 'all';
 let selectedId = null;
+let gpsActive = false;
+let gpsWatchId = null;
+let userMarker = null;
+let userAccuracyCircle = null;
+let alertDismissed = false;
 
-// ══════════════════════════════════════════════════
-//  LEAFLET MAP
-// ══════════════════════════════════════════════════
-const map = L.map('map', {
-  center: DEFAULT_CENTER,
-  zoom: DEFAULT_ZOOM,
-  zoomControl: true,
-}).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+// ── Map ──
+const map = L.map('map', { center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, zoomControl: true });
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19,
-}).addTo(map);
+const tileLayers = {
+  dark: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, className: 'dark-tiles' }),
+  street: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }),
+  satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }),
+};
+let currentTile = 'dark';
+tileLayers.dark.addTo(map);
 
-// Click map to fill form
+function switchTile(name) {
+  map.removeLayer(tileLayers[currentTile]);
+  tileLayers[name].addTo(map);
+  currentTile = name;
+  const pane = document.querySelector('.leaflet-tile-pane');
+  pane.style.filter = name === 'dark' ? 'invert(1) hue-rotate(200deg) brightness(0.8) contrast(1.1) saturate(0.3)' : 'none';
+  document.querySelectorAll('.tile-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.tile-btn[data-tile="${name}"]`).classList.add('active');
+}
+
 map.on('click', (e) => {
   document.getElementById('inputLat').value = e.latlng.lat.toFixed(6);
   document.getElementById('inputLng').value = e.latlng.lng.toFixed(6);
 });
 
+// ── Layer Groups ──
+const clusterGroup = L.markerClusterGroup({
+  maxClusterRadius: 50, spiderfyOnMaxZoom: true, showCoverageOnHover: false, zoomToBoundsOnClick: true,
+  iconCreateFunction(cluster) {
+    const c = cluster.getChildCount();
+    const size = c >= 50 ? 'large' : c >= 10 ? 'medium' : 'small';
+    return L.divIcon({ html: `<div><span>${c}</span></div>`, className: `marker-cluster marker-cluster-${size}`, iconSize: L.point(40, 40) });
+  }
+});
+const markerGroup = L.layerGroup();
+let heatLayer = null;
+let allMarkers = [];
+
+map.addLayer(markerGroup); // Start with plain markers
+
 function createMarker(p) {
   const color = SEVERITY_COLORS[p.severity];
   const size = p.severity === 'high' ? 16 : p.severity === 'medium' ? 12 : 10;
-
-  const icon = L.divIcon({
-    className: '',
-    html: `<div class="pothole-marker ${p.severity}" style="width:${size}px;height:${size}px;"></div>`,
-    iconSize: [size, size],
-    iconAnchor: [size/2, size/2],
-  });
-
+  const icon = L.divIcon({ className: '', html: `<div class="pothole-marker ${p.severity}" style="width:${size}px;height:${size}px;"></div>`, iconSize: [size, size], iconAnchor: [size/2, size/2] });
   const marker = L.marker([p.latitude, p.longitude], { icon });
-
-  const sourceTag = p.source === 'ios'
-    ? `<div style="margin-top:4px;"><span class="source-badge source-ios" style="font-size:9px;">📱 iOS</span>${p.confidence ? ` <span style="color:var(--text-muted);font-size:10px;">${(p.confidence*100).toFixed(0)}% conf</span>` : ''}</div>`
-    : '';
-
+  const sourceTag = p.source === 'ios' ? `<div style="margin-top:4px;"><span class="source-badge source-ios" style="font-size:9px;">📱 iOS</span>${p.confidence ? ` <span style="color:var(--text-muted);font-size:10px;">${(p.confidence*100).toFixed(0)}% conf</span>` : ''}</div>` : '';
   marker.bindPopup(`
     <div class="popup-id">${p.id}</div>
     <div class="popup-severity" style="color:${color}">${p.severity}</div>
@@ -538,64 +513,128 @@ function createMarker(p) {
       <button class="btn btn-secondary btn-sm" onclick="deletePothole('${p.id}')">✕ Delete</button>
     </div>
   `, { maxWidth: 220 });
-
-  marker.on('click', () => {
-    selectedId = p.id;
-    renderList();
-  });
-
+  marker.on('click', () => { selectedId = p.id; renderList(); });
+  marker._potholeId = p.id;
   return marker;
 }
 
-function refreshMarkers() {
-  // Clear existing
-  Object.values(markers).forEach(m => map.removeLayer(m));
-  markers = {};
-
+function refreshLayers() {
   let filtered = potholes;
-  if (activeFilter === 'ios') {
-    filtered = potholes.filter(p => p.source === 'ios');
-  } else if (activeFilter !== 'all') {
-    filtered = potholes.filter(p => p.severity === activeFilter);
+  if (activeFilter === 'ios') filtered = potholes.filter(p => p.source === 'ios');
+  else if (activeFilter !== 'all') filtered = potholes.filter(p => p.severity === activeFilter);
+
+  clusterGroup.clearLayers();
+  markerGroup.clearLayers();
+  if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+
+  allMarkers = filtered.map(p => createMarker(p));
+
+  const useClusters = document.getElementById('layerClusters').checked;
+  const useMarkers = document.getElementById('layerMarkers').checked;
+  const useHeat = document.getElementById('layerHeatmap').checked;
+
+  if (useClusters) {
+    clusterGroup.addLayers(allMarkers);
+    if (!map.hasLayer(clusterGroup)) map.addLayer(clusterGroup);
+    if (map.hasLayer(markerGroup)) map.removeLayer(markerGroup);
+  } else if (useMarkers) {
+    allMarkers.forEach(m => markerGroup.addLayer(m));
+    if (!map.hasLayer(markerGroup)) map.addLayer(markerGroup);
+    if (map.hasLayer(clusterGroup)) map.removeLayer(clusterGroup);
+  } else {
+    if (map.hasLayer(markerGroup)) map.removeLayer(markerGroup);
+    if (map.hasLayer(clusterGroup)) map.removeLayer(clusterGroup);
   }
 
-  filtered.forEach(p => {
-    markers[p.id] = createMarker(p);
-    markers[p.id].addTo(map);
-  });
+  if (useHeat && filtered.length > 0) {
+    const heatData = filtered.map(p => [p.latitude, p.longitude, SEVERITY_WEIGHT[p.severity] || 0.5]);
+    heatLayer = L.heatLayer(heatData, {
+      radius: 30, blur: 20, maxZoom: 17, max: 1.0,
+      gradient: { 0.2: '#2dd881', 0.5: '#ffc142', 0.8: '#ff5c35', 1.0: '#ff4757' }
+    });
+    map.addLayer(heatLayer);
+  }
 }
 
-// ══════════════════════════════════════════════════
-//  API CALLS
-// ══════════════════════════════════════════════════
+// ── Layer toggles ──
+document.getElementById('layerMarkers').addEventListener('change', (e) => {
+  if (e.target.checked) document.getElementById('layerClusters').checked = false;
+  refreshLayers();
+});
+document.getElementById('layerClusters').addEventListener('change', (e) => {
+  if (e.target.checked) document.getElementById('layerMarkers').checked = false;
+  refreshLayers();
+});
+document.getElementById('layerHeatmap').addEventListener('change', () => refreshLayers());
 
+// ── GPS ──
+function toggleGPS() { gpsActive ? stopGPS() : startGPS(); }
+
+function startGPS() {
+  if (!navigator.geolocation) { alert('Geolocation not supported.'); return; }
+  gpsActive = true;
+  document.getElementById('gpsBtn').classList.add('active');
+  gpsWatchId = navigator.geolocation.watchPosition((pos) => {
+    const { latitude: lat, longitude: lng, accuracy: acc } = pos.coords;
+    if (userMarker) {
+      userMarker.setLatLng([lat, lng]);
+      userAccuracyCircle.setLatLng([lat, lng]).setRadius(acc);
+    } else {
+      userMarker = L.circleMarker([lat, lng], { radius: 8, fillColor: '#4a9eff', fillOpacity: 1, color: '#fff', weight: 3 }).addTo(map);
+      userAccuracyCircle = L.circle([lat, lng], { radius: acc, fillColor: '#4a9eff', fillOpacity: 0.08, color: '#4a9eff', weight: 1, opacity: 0.3 }).addTo(map);
+    }
+    map.setView([lat, lng], Math.max(map.getZoom(), 15));
+    checkNearbyPotholes(lat, lng);
+  }, (err) => { console.error('GPS error:', err); stopGPS(); },
+  { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 });
+}
+
+function stopGPS() {
+  gpsActive = false;
+  document.getElementById('gpsBtn').classList.remove('active');
+  if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
+  if (userMarker) { map.removeLayer(userMarker); map.removeLayer(userAccuracyCircle); userMarker = null; userAccuracyCircle = null; }
+  document.getElementById('nearbyAlert').classList.remove('visible');
+}
+
+function haversineDistance(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function checkNearbyPotholes(userLat, userLng) {
+  if (alertDismissed) return;
+  const nearby = potholes.filter(p => haversineDistance(userLat, userLng, p.latitude, p.longitude) <= NEARBY_RADIUS_M);
+  const el = document.getElementById('nearbyAlert');
+  if (nearby.length > 0) { document.getElementById('nearbyCount').textContent = nearby.length; el.classList.add('visible'); }
+  else el.classList.remove('visible');
+}
+
+function dismissAlert() {
+  document.getElementById('nearbyAlert').classList.remove('visible');
+  alertDismissed = true;
+  setTimeout(() => { alertDismissed = false; }, 30000);
+}
+
+// ── API ──
 async function apiCall(method, path, body = null) {
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-  };
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-
   const t0 = performance.now();
   try {
     const res = await fetch(`${API_BASE}${path}`, opts);
     const data = await res.json();
-    const ms = (performance.now() - t0).toFixed(0);
-    logApi(method, path, res.status, `${ms}ms`);
+    logApi(method, path, res.status, `${(performance.now()-t0).toFixed(0)}ms`);
     return { status: res.status, data };
-  } catch (err) {
-    logApi(method, path, 0, err.message);
-    return { status: 0, data: null };
-  }
+  } catch (err) { logApi(method, path, 0, err.message); return { status: 0, data: null }; }
 }
 
 async function loadPotholes() {
   const res = await apiCall('GET', '/api/potholes?status=active&limit=500');
-  if (res.data) {
-    potholes = res.data.potholes;
-    renderList();
-    refreshMarkers();
-  }
+  if (res.data) { potholes = res.data.potholes; renderList(); refreshLayers(); }
   await loadStats();
 }
 
@@ -609,76 +648,40 @@ async function loadStats() {
   }
 }
 
-async function postPothole(data) {
-  const res = await apiCall('POST', '/api/potholes', data);
-  if (res.status === 201) {
-    await loadPotholes();
-  }
-}
-
-async function deletePothole(id) {
-  const res = await apiCall('DELETE', `/api/potholes/${id}`);
-  if (res.status === 200) {
-    await loadPotholes();
-  }
-}
-
-async function resolvePothole(id) {
-  const res = await apiCall('PATCH', `/api/potholes/${id}`, { status: 'resolved' });
-  if (res.status === 200) {
-    map.closePopup();
-    await loadPotholes();
-  }
-}
-
-// ══════════════════════════════════════════════════
-//  API CONSOLE
-// ══════════════════════════════════════════════════
+async function postPothole(data) { if ((await apiCall('POST', '/api/potholes', data)).status === 201) await loadPotholes(); }
+async function deletePothole(id) { if ((await apiCall('DELETE', `/api/potholes/${id}`)).status === 200) await loadPotholes(); }
+async function resolvePothole(id) { const r = await apiCall('PATCH', `/api/potholes/${id}`, { status: 'resolved' }); if (r.status === 200) { map.closePopup(); await loadPotholes(); } }
 
 function logApi(method, path, status, msg) {
   const el = document.getElementById('apiConsole');
   const time = new Date().toLocaleTimeString('en-US', { hour12: false });
-  const statusClass = status >= 200 && status < 400 ? 'status-ok' : 'status-err';
+  const cls = status >= 200 && status < 400 ? 'status-ok' : 'status-err';
   const line = document.createElement('div');
-  line.innerHTML = `<span class="timestamp">[${time}]</span> <span class="method">${method}</span> <span class="url">${path}</span> → <span class="${statusClass}">${status}</span> ${msg || ''}`;
+  line.innerHTML = `<span class="timestamp">[${time}]</span> <span class="method">${method}</span> <span class="url">${path}</span> → <span class="${cls}">${status}</span> ${msg||''}`;
   el.appendChild(line);
   el.scrollTop = el.scrollHeight;
 }
 
-// ══════════════════════════════════════════════════
-//  UI RENDERING
-// ══════════════════════════════════════════════════
-
+// ── UI ──
 function renderList() {
   const list = document.getElementById('potholeList');
   let filtered = potholes;
-  if (activeFilter === 'ios') {
-    filtered = potholes.filter(p => p.source === 'ios');
-  } else if (activeFilter !== 'all') {
-    filtered = potholes.filter(p => p.severity === activeFilter);
-  }
-
-  if (filtered.length === 0) {
-    list.innerHTML = `<div class="empty-state"><div class="icon">🕳️</div><p>No potholes match this filter.</p></div>`;
-    return;
-  }
-
-  list.innerHTML = filtered.map(p => {
-    const sourceIcon = p.source === 'ios' ? ' 📱' : '';
-    return `
-    <div class="pothole-item ${selectedId === p.id ? 'active' : ''}" onclick="focusPothole('${p.id}')">
+  if (activeFilter === 'ios') filtered = potholes.filter(p => p.source === 'ios');
+  else if (activeFilter !== 'all') filtered = potholes.filter(p => p.severity === activeFilter);
+  if (!filtered.length) { list.innerHTML = `<div class="empty-state"><div class="icon">🕳️</div><p>No potholes match this filter.</p></div>`; return; }
+  list.innerHTML = filtered.map(p => `
+    <div class="pothole-item ${selectedId===p.id?'active':''}" onclick="focusPothole('${p.id}')">
       <div class="pothole-header">
-        <span class="pothole-id">${p.id}${sourceIcon}</span>
+        <span class="pothole-id">${p.id}${p.source==='ios'?' 📱':''}</span>
         <span class="severity-badge severity-${p.severity}">${p.severity}</span>
       </div>
       <div class="pothole-coords">${p.latitude.toFixed(6)}, ${p.longitude.toFixed(6)}</div>
-      ${p.description ? `<div class="pothole-desc">${p.description}</div>` : ''}
+      ${p.description?`<div class="pothole-desc">${p.description}</div>`:''}
       <div class="pothole-footer">
         <span class="pothole-time">${timeAgo(p.reported_at)}</span>
-        ${p.confidence ? `<span style="font-size:10px;color:var(--text-muted);">${(p.confidence*100).toFixed(0)}% conf</span>` : ''}
+        ${p.confidence?`<span style="font-size:10px;color:var(--text-muted);">${(p.confidence*100).toFixed(0)}% conf</span>`:''}
       </div>
-    </div>`;
-  }).join('');
+    </div>`).join('');
 }
 
 function focusPothole(id) {
@@ -686,50 +689,38 @@ function focusPothole(id) {
   const p = potholes.find(x => x.id === id);
   if (p) {
     map.setView([p.latitude, p.longitude], 16, { animate: true });
-    if (markers[id]) markers[id].openPopup();
+    const m = allMarkers.find(m => m._potholeId === id);
+    if (m) {
+      if (document.getElementById('layerClusters').checked) clusterGroup.zoomToShowLayer(m, () => m.openPopup());
+      else m.openPopup();
+    }
   }
   renderList();
 }
 
 function timeAgo(iso) {
-  const diff = Date.now() - new Date(iso).getTime();
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
-  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
-  return Math.floor(diff / 86400000) + 'd ago';
+  const d = Date.now() - new Date(iso).getTime();
+  if (d < 60000) return 'just now';
+  if (d < 3600000) return Math.floor(d/60000) + 'm ago';
+  if (d < 86400000) return Math.floor(d/3600000) + 'h ago';
+  return Math.floor(d/86400000) + 'd ago';
 }
 
 function fillRandom() {
-  const lat = 31.310 + Math.random() * 0.025;
-  const lng = 73.365 + Math.random() * 0.030;
-  const descs = [
-    'Deep pothole after rain damage', 'Cracked surface near intersection',
-    'Large crater, vehicle hazard', 'Minor surface crack',
-    'Road edge collapsed', 'Sinkhole forming', 'Multiple potholes in cluster'
-  ];
-  document.getElementById('inputLat').value = lat.toFixed(6);
-  document.getElementById('inputLng').value = lng.toFixed(6);
+  const descs = ['Deep pothole after rain damage','Cracked surface near intersection','Large crater, vehicle hazard','Minor surface crack','Road edge collapsed','Sinkhole forming','Multiple potholes in cluster'];
+  document.getElementById('inputLat').value = (31.310 + Math.random()*0.025).toFixed(6);
+  document.getElementById('inputLng').value = (73.365 + Math.random()*0.030).toFixed(6);
   document.getElementById('inputSeverity').value = ['low','medium','high'][Math.floor(Math.random()*3)];
-  document.getElementById('inputDesc').value = descs[Math.floor(Math.random() * descs.length)];
+  document.getElementById('inputDesc').value = descs[Math.floor(Math.random()*descs.length)];
 }
 
-// ══════════════════════════════════════════════════
-//  EVENTS
-// ══════════════════════════════════════════════════
-
-// Form submit
+// ── Events ──
 document.getElementById('potholeForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  await postPothole({
-    latitude: parseFloat(document.getElementById('inputLat').value),
-    longitude: parseFloat(document.getElementById('inputLng').value),
-    severity: document.getElementById('inputSeverity').value,
-    description: document.getElementById('inputDesc').value,
-  });
+  await postPothole({ latitude: parseFloat(document.getElementById('inputLat').value), longitude: parseFloat(document.getElementById('inputLng').value), severity: document.getElementById('inputSeverity').value, description: document.getElementById('inputDesc').value });
   e.target.reset();
 });
 
-// Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -739,21 +730,17 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
-// Filters
 document.querySelectorAll('.filter-chip').forEach(chip => {
   chip.addEventListener('click', () => {
     document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
     chip.classList.add('active');
     activeFilter = chip.dataset.filter;
     renderList();
-    refreshMarkers();
+    refreshLayers();
   });
 });
 
-// Auto-refresh every 10s
 setInterval(loadPotholes, 10000);
-
-// Init
 loadPotholes();
 </script>
 </body>

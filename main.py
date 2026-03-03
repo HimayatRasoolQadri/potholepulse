@@ -8,12 +8,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import sqlite3
 import json
 import os
 import uuid
+import math
 
 # ─── App Setup ───────────────────────────────────────────────
 
@@ -89,6 +90,108 @@ class PotholeUpdate(BaseModel):
     severity: Optional[str] = Field(None, pattern="^(low|medium|high)$")
     description: Optional[str] = None
     status: Optional[str] = Field(None, pattern="^(active|resolved|disputed)$")
+
+
+class RoutePoint(BaseModel):
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+
+
+class RouteCompareRequest(BaseModel):
+    """Compare multiple routes for pothole density"""
+    routes: List[dict] = Field(..., description="List of routes, each with 'name' and 'waypoints' (list of {lat, lng})")
+    corridor_width: float = Field(100, ge=10, le=500, description="Corridor width in meters from route line")
+
+
+# ─── Geo Helpers ─────────────────────────────────────────
+
+def haversine(lat1, lng1, lat2, lng2):
+    """Distance in meters between two GPS points."""
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lng2 - lng1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def point_to_segment_distance(px, py, ax, ay, bx, by):
+    """Minimum distance (meters) from point P to line segment A-B, all in lat/lng."""
+    abx, aby = bx - ax, by - ay
+    apx, apy = px - ax, py - ay
+    ab2 = abx*abx + aby*aby
+    if ab2 == 0:
+        return haversine(px, py, ax, ay)
+    t = max(0, min(1, (apx*abx + apy*aby) / ab2))
+    closest_lat = ax + t * abx
+    closest_lng = ay + t * aby
+    return haversine(px, py, closest_lat, closest_lng)
+
+
+def distance_along_route(waypoints, pothole_lat, pothole_lng):
+    """Approximate distance in km from route start to the nearest point on route to the pothole."""
+    cumulative = 0
+    min_dist = float('inf')
+    best_km = 0
+    for i in range(len(waypoints) - 1):
+        seg_dist = point_to_segment_distance(
+            pothole_lat, pothole_lng,
+            waypoints[i][0], waypoints[i][1],
+            waypoints[i+1][0], waypoints[i+1][1]
+        )
+        if seg_dist < min_dist:
+            min_dist = seg_dist
+            # Approximate position along segment
+            d_to_start = haversine(pothole_lat, pothole_lng, waypoints[i][0], waypoints[i][1])
+            seg_len = haversine(waypoints[i][0], waypoints[i][1], waypoints[i+1][0], waypoints[i+1][1])
+            frac = min(1, d_to_start / seg_len) if seg_len > 0 else 0
+            best_km = (cumulative + frac * seg_len) / 1000
+        cumulative += haversine(waypoints[i][0], waypoints[i][1], waypoints[i+1][0], waypoints[i+1][1])
+    return round(best_km, 2)
+
+
+def find_potholes_along_route(waypoints, corridor_width_m, potholes_rows):
+    """Find all potholes within corridor_width of a polyline defined by waypoints."""
+    results = []
+    for r in potholes_rows:
+        plat, plng = r["latitude"], r["longitude"]
+        min_dist = float('inf')
+        for i in range(len(waypoints) - 1):
+            d = point_to_segment_distance(
+                plat, plng,
+                waypoints[i][0], waypoints[i][1],
+                waypoints[i+1][0], waypoints[i+1][1]
+            )
+            min_dist = min(min_dist, d)
+            if min_dist <= corridor_width_m:
+                break
+        if min_dist <= corridor_width_m:
+            results.append({
+                "id": r["id"],
+                "latitude": plat,
+                "longitude": plng,
+                "severity": r["severity"],
+                "confidence": r["confidence"],
+                "description": r["description"],
+                "reported_at": r["reported_at"],
+                "source": r["source"],
+                "distance_from_route_m": round(min_dist, 1),
+                "distance_from_start_km": distance_along_route(waypoints, plat, plng),
+            })
+    # Sort by distance along route
+    results.sort(key=lambda x: x["distance_from_start_km"])
+    return results
+
+
+def compute_road_quality_score(route_potholes):
+    """Compute 0-100 road quality score. 100 = perfect, 0 = disaster."""
+    if not route_potholes:
+        return 100
+    severity_penalty = {"low": 1, "medium": 3, "high": 7}
+    total_penalty = sum(severity_penalty.get(p["severity"], 2) for p in route_potholes)
+    # Scale: 10 high-severity potholes = score of 30
+    score = max(0, 100 - total_penalty * 1.5)
+    return round(score)
 
 def generate_id():
     """Generate a short readable ID"""
@@ -320,6 +423,221 @@ def delete_pothole(pothole_id: str):
     return {"deleted": pothole_id}
 
 
+# ─── Route Intelligence API ──────────────────────────────
+
+# --- GET /api/potholes/route — Query potholes along a route ---
+@app.get("/api/potholes/route")
+def potholes_along_route(
+    start_lat: float = Query(..., ge=-90, le=90),
+    start_lng: float = Query(..., ge=-180, le=180),
+    end_lat: float = Query(..., ge=-90, le=90),
+    end_lng: float = Query(..., ge=-180, le=180),
+    corridor_width: float = Query(100, ge=10, le=500, description="Meters from route line"),
+    via_lat: Optional[float] = Query(None, ge=-90, le=90),
+    via_lng: Optional[float] = Query(None, ge=-180, le=180),
+):
+    """
+    Find all active potholes within a corridor along a route.
+    
+    Simple straight-line route from start to end (with optional via point).
+    For real polyline routes, use POST /api/potholes/route-polyline.
+    
+    iOS usage:
+        GET /api/potholes/route?start_lat=31.02&start_lng=73.85&end_lat=31.55&end_lng=74.34
+    """
+    waypoints = [(start_lat, start_lng)]
+    if via_lat is not None and via_lng is not None:
+        waypoints.append((via_lat, via_lng))
+    waypoints.append((end_lat, end_lng))
+
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM potholes WHERE status = 'active'").fetchall()
+    conn.close()
+
+    route_potholes = find_potholes_along_route(waypoints, corridor_width, rows)
+
+    by_severity = {"low": 0, "medium": 0, "high": 0}
+    for p in route_potholes:
+        by_severity[p["severity"]] = by_severity.get(p["severity"], 0) + 1
+
+    return {
+        "route_potholes": route_potholes,
+        "summary": {
+            "total": len(route_potholes),
+            "critical": by_severity.get("high", 0),
+            "moderate": by_severity.get("medium", 0),
+            "minor": by_severity.get("low", 0),
+            "road_quality_score": compute_road_quality_score(route_potholes),
+        }
+    }
+
+
+# --- POST /api/potholes/route-polyline — Query with full polyline ---
+@app.post("/api/potholes/route-polyline")
+def potholes_along_polyline(
+    body: dict,
+):
+    """
+    Find potholes along a detailed polyline route.
+    
+    Body:
+    {
+        "waypoints": [[lat, lng], [lat, lng], ...],
+        "corridor_width": 100
+    }
+    """
+    waypoints = body.get("waypoints", [])
+    corridor_width = body.get("corridor_width", 100)
+
+    if len(waypoints) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 waypoints")
+
+    waypoints = [(w[0], w[1]) for w in waypoints]
+
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM potholes WHERE status = 'active'").fetchall()
+    conn.close()
+
+    route_potholes = find_potholes_along_route(waypoints, corridor_width, rows)
+
+    by_severity = {"low": 0, "medium": 0, "high": 0}
+    for p in route_potholes:
+        by_severity[p["severity"]] = by_severity.get(p["severity"], 0) + 1
+
+    return {
+        "route_potholes": route_potholes,
+        "summary": {
+            "total": len(route_potholes),
+            "critical": by_severity.get("high", 0),
+            "moderate": by_severity.get("medium", 0),
+            "minor": by_severity.get("low", 0),
+            "road_quality_score": compute_road_quality_score(route_potholes),
+        }
+    }
+
+
+# --- POST /api/potholes/compare-routes — Compare multiple routes ---
+@app.post("/api/potholes/compare-routes")
+def compare_routes(data: RouteCompareRequest):
+    """
+    Compare pothole density across multiple routes.
+    
+    Body:
+    {
+        "routes": [
+            {
+                "name": "N-5 Highway",
+                "waypoints": [[31.02, 73.85], [31.20, 74.10], [31.55, 74.34]]
+            },
+            {
+                "name": "Via Kasur",
+                "waypoints": [[31.02, 73.85], [31.18, 74.00], [31.55, 74.34]]
+            }
+        ],
+        "corridor_width": 100
+    }
+    """
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM potholes WHERE status = 'active'").fetchall()
+    conn.close()
+
+    results = []
+    for route in data.routes:
+        name = route.get("name", "Unnamed")
+        waypoints = [(w[0], w[1]) for w in route.get("waypoints", [])]
+
+        if len(waypoints) < 2:
+            results.append({
+                "name": name,
+                "error": "Need at least 2 waypoints",
+            })
+            continue
+
+        route_potholes = find_potholes_along_route(waypoints, data.corridor_width, rows)
+
+        by_severity = {"low": 0, "medium": 0, "high": 0}
+        for p in route_potholes:
+            by_severity[p["severity"]] = by_severity.get(p["severity"], 0) + 1
+
+        # Estimate route distance
+        total_dist_km = sum(
+            haversine(waypoints[i][0], waypoints[i][1], waypoints[i+1][0], waypoints[i+1][1])
+            for i in range(len(waypoints) - 1)
+        ) / 1000
+
+        results.append({
+            "name": name,
+            "total_potholes": len(route_potholes),
+            "critical": by_severity.get("high", 0),
+            "moderate": by_severity.get("medium", 0),
+            "minor": by_severity.get("low", 0),
+            "road_quality_score": compute_road_quality_score(route_potholes),
+            "potholes_per_km": round(len(route_potholes) / max(total_dist_km, 0.1), 2),
+            "route_distance_km": round(total_dist_km, 1),
+            "potholes": route_potholes,
+        })
+
+    # Sort by road quality score (best first)
+    results.sort(key=lambda x: x.get("road_quality_score", 0), reverse=True)
+
+    return {
+        "recommended": results[0]["name"] if results else None,
+        "routes": results,
+    }
+
+
+# --- GET /api/potholes/nearby — Quick proximity check for iOS ---
+@app.get("/api/potholes/nearby")
+def nearby_potholes(
+    lat: float = Query(..., ge=-90, le=90),
+    lng: float = Query(..., ge=-180, le=180),
+    radius: float = Query(500, ge=10, le=5000, description="Radius in meters"),
+):
+    """
+    Find potholes near a GPS point. Designed for real-time iOS alerts.
+    
+    iOS usage:
+        GET /api/potholes/nearby?lat=31.32&lng=73.38&radius=500
+    """
+    conn = get_db()
+    # Rough bounding box filter first (for performance)
+    deg_offset = radius / 111000  # ~111km per degree
+    rows = conn.execute(
+        """SELECT * FROM potholes WHERE status = 'active'
+           AND latitude BETWEEN ? AND ?
+           AND longitude BETWEEN ? AND ?""",
+        (lat - deg_offset, lat + deg_offset, lng - deg_offset, lng + deg_offset)
+    ).fetchall()
+    conn.close()
+
+    # Precise haversine filter
+    results = []
+    for r in rows:
+        dist = haversine(lat, lng, r["latitude"], r["longitude"])
+        if dist <= radius:
+            results.append({
+                "id": r["id"],
+                "latitude": r["latitude"],
+                "longitude": r["longitude"],
+                "severity": r["severity"],
+                "confidence": r["confidence"],
+                "description": r["description"],
+                "distance_m": round(dist, 1),
+                "bearing": round(math.degrees(math.atan2(
+                    r["longitude"] - lng, r["latitude"] - lat
+                )) % 360),
+            })
+
+    results.sort(key=lambda x: x["distance_m"])
+
+    return {
+        "count": len(results),
+        "radius_m": radius,
+        "center": {"lat": lat, "lng": lng},
+        "potholes": results,
+    }
+
+
 # ─── Frontend ────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -333,7 +651,8 @@ def serve_frontend():
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n🕳️  PotholePulse API running at http://localhost:8000")
-    print("📡 API Docs:  http://localhost:8000/docs")
-    print("🗺️  Map:       http://localhost:8000\n")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    print(f"\n🕳️  PotholePulse API running on port {port}")
+    print(f"📡 API Docs:  http://localhost:{port}/docs")
+    print(f"🗺️  Map:       http://localhost:{port}\n")
+    uvicorn.run(app, host="0.0.0.0", port=port)

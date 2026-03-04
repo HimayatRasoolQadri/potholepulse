@@ -435,59 +435,9 @@ def potholes_geojson(
     }
 
 
-# --- GET /api/potholes/:id ---
-@app.get("/api/potholes/{pothole_id}")
-def get_pothole(pothole_id: str):
-    conn = get_db()
-    row = conn.execute("SELECT * FROM potholes WHERE id = ?", (pothole_id,)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(status_code=404, detail="Pothole not found")
-    return row_to_dict(row)
-
-
-# --- PATCH /api/potholes/:id ---
-@app.patch("/api/potholes/{pothole_id}")
-def update_pothole(pothole_id: str, data: PotholeUpdate):
-    conn = get_db()
-    row = conn.execute("SELECT * FROM potholes WHERE id = ?", (pothole_id,)).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Pothole not found")
-    
-    updates = {}
-    if data.severity is not None:
-        updates["severity"] = data.severity
-    if data.description is not None:
-        updates["description"] = data.description
-    if data.status is not None:
-        updates["status"] = data.status
-
-    if updates:
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        conn.execute(f"UPDATE potholes SET {set_clause} WHERE id = ?", list(updates.values()) + [pothole_id])
-        conn.commit()
-
-    row = conn.execute("SELECT * FROM potholes WHERE id = ?", (pothole_id,)).fetchone()
-    conn.close()
-    return row_to_dict(row)
-
-
-# --- DELETE /api/potholes/:id ---
-@app.delete("/api/potholes/{pothole_id}")
-def delete_pothole(pothole_id: str):
-    conn = get_db()
-    row = conn.execute("SELECT * FROM potholes WHERE id = ?", (pothole_id,)).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Pothole not found")
-    conn.execute("DELETE FROM potholes WHERE id = ?", (pothole_id,))
-    conn.commit()
-    conn.close()
-    return {"deleted": pothole_id}
-
-
 # ─── Route Intelligence API ──────────────────────────────
+# IMPORTANT: These must be defined BEFORE /api/potholes/{pothole_id}
+# or FastAPI will match "route", "nearby" etc as a pothole_id.
 
 def _build_route_response(route_potholes, route_info=None):
     """Build a standard route response with summary."""
@@ -523,11 +473,6 @@ async def potholes_along_route(
     """
     Find all active potholes along the actual road between two points.
     Uses OSRM (free) for real road geometry — follows actual streets, not straight lines.
-    
-    iOS usage:
-        GET /api/potholes/route?start_lat=31.52&start_lng=74.34&end_lat=31.48&end_lng=74.32
-    
-    The response includes the road polyline so you can draw it on a map.
     """
     conn = get_db()
     rows = conn.execute("SELECT * FROM potholes WHERE status = 'active'").fetchall()
@@ -546,10 +491,9 @@ async def potholes_along_route(
             "distance_km": road["distance_km"],
             "duration_min": road["duration_min"],
             "waypoint_count": len(waypoints),
-            "polyline": [[w[0], w[1]] for w in waypoints],  # For map drawing
+            "polyline": [[w[0], w[1]] for w in waypoints],
         })
     else:
-        # Fallback: straight line
         waypoints = [(start_lat, start_lng), (end_lat, end_lng)]
         route_potholes = find_potholes_along_route(waypoints, corridor_width, rows)
         return _build_route_response(route_potholes)
@@ -560,12 +504,6 @@ async def potholes_along_route(
 def potholes_along_polyline(body: dict):
     """
     Find potholes along a polyline you provide (e.g. from Apple Maps directions).
-    
-    Body:
-    {
-        "waypoints": [[lat, lng], [lat, lng], ...],
-        "corridor_width": 50
-    }
     """
     waypoints = body.get("waypoints", [])
     corridor_width = body.get("corridor_width", 50)
@@ -588,23 +526,6 @@ def potholes_along_polyline(body: dict):
 async def compare_routes(data: RouteCompareRequest):
     """
     Compare pothole density across multiple routes.
-    Each route can provide waypoints OR just start/end (OSRM fetches the road).
-    
-    Body:
-    {
-        "routes": [
-            {
-                "name": "N-5 Highway",
-                "waypoints": [[31.02, 73.85], [31.20, 74.10], [31.55, 74.34]]
-            },
-            {
-                "name": "Direct Route",
-                "start": [31.02, 73.85],
-                "end": [31.55, 74.34]
-            }
-        ],
-        "corridor_width": 50
-    }
     """
     conn = get_db()
     rows = conn.execute("SELECT * FROM potholes WHERE status = 'active'").fetchall()
@@ -615,7 +536,6 @@ async def compare_routes(data: RouteCompareRequest):
         name = route.get("name", "Unnamed")
         waypoints_raw = route.get("waypoints", [])
 
-        # If no waypoints but has start/end, fetch from OSRM
         if len(waypoints_raw) < 2 and "start" in route and "end" in route:
             s, e = route["start"], route["end"]
             osrm = await get_osrm_route(s[0], s[1], e[0], e[1])
@@ -673,13 +593,9 @@ def nearby_potholes(
 ):
     """
     Find potholes near a GPS point. Designed for real-time iOS alerts.
-    
-    iOS usage:
-        GET /api/potholes/nearby?lat=31.32&lng=73.38&radius=500
     """
     conn = get_db()
-    # Rough bounding box filter first (for performance)
-    deg_offset = radius / 111000  # ~111km per degree
+    deg_offset = radius / 111000
     rows = conn.execute(
         """SELECT * FROM potholes WHERE status = 'active'
            AND latitude BETWEEN ? AND ?
@@ -688,7 +604,6 @@ def nearby_potholes(
     ).fetchall()
     conn.close()
 
-    # Precise haversine filter
     results = []
     for r in rows:
         dist = haversine(lat, lng, r["latitude"], r["longitude"])
@@ -716,6 +631,56 @@ def nearby_potholes(
     }
 
 
+# --- GET /api/potholes/:id --- (MUST be after /route, /nearby, /stats etc)
+@app.get("/api/potholes/{pothole_id}")
+def get_pothole(pothole_id: str):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM potholes WHERE id = ?", (pothole_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Pothole not found")
+    return row_to_dict(row)
+
+
+# --- PATCH /api/potholes/:id ---
+@app.patch("/api/potholes/{pothole_id}")
+def update_pothole(pothole_id: str, data: PotholeUpdate):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM potholes WHERE id = ?", (pothole_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Pothole not found")
+    
+    updates = {}
+    if data.severity is not None:
+        updates["severity"] = data.severity
+    if data.description is not None:
+        updates["description"] = data.description
+    if data.status is not None:
+        updates["status"] = data.status
+
+    if updates:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(f"UPDATE potholes SET {set_clause} WHERE id = ?", list(updates.values()) + [pothole_id])
+        conn.commit()
+
+    row = conn.execute("SELECT * FROM potholes WHERE id = ?", (pothole_id,)).fetchone()
+    conn.close()
+    return row_to_dict(row)
+
+
+# --- DELETE /api/potholes/:id ---
+@app.delete("/api/potholes/{pothole_id}")
+def delete_pothole(pothole_id: str):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM potholes WHERE id = ?", (pothole_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Pothole not found")
+    conn.execute("DELETE FROM potholes WHERE id = ?", (pothole_id,))
+    conn.commit()
+    conn.close()
+    return {"deleted": pothole_id}
 # ─── Frontend ────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)

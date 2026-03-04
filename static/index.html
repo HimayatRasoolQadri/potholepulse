@@ -742,6 +742,17 @@ document.querySelectorAll('.filter-chip').forEach(chip => {
 
 setInterval(loadPotholes, 10000);
 loadPotholes();
+
+// Auto-center on user's location at startup
+if (navigator.geolocation) {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      map.setView([pos.coords.latitude, pos.coords.longitude], 14, { animate: true });
+    },
+    () => {}, // silently fail, keep default center
+    { enableHighAccuracy: false, timeout: 5000 }
+  );
+}
 </script>
 </body>
 </html>

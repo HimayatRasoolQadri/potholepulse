@@ -15,6 +15,7 @@ import json
 import os
 import uuid
 import math
+import httpx
 
 # ─── App Setup ───────────────────────────────────────────────
 
@@ -192,6 +193,69 @@ def compute_road_quality_score(route_potholes):
     # Scale: 10 high-severity potholes = score of 30
     score = max(0, 100 - total_penalty * 1.5)
     return round(score)
+
+
+def decode_polyline(encoded, precision=5):
+    """Decode a Google/OSRM encoded polyline into list of (lat, lng) tuples."""
+    inv = 1.0 / (10 ** precision)
+    decoded = []
+    previous = [0, 0]
+    i = 0
+    while i < len(encoded):
+        for dim in range(2):
+            shift = 0
+            result = 0
+            while True:
+                b = ord(encoded[i]) - 63
+                i += 1
+                result |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            if result & 1:
+                result = ~result
+            result >>= 1
+            previous[dim] += result
+        decoded.append((previous[0] * inv, previous[1] * inv))
+    return decoded
+
+
+async def get_osrm_route(start_lat, start_lng, end_lat, end_lng, via_points=None, alternatives=False):
+    """
+    Fetch actual road geometry from OSRM (free, no API key).
+    Returns list of routes, each with waypoints and metadata.
+    """
+    coords = f"{start_lng},{start_lat};"
+    if via_points:
+        for vp in via_points:
+            coords += f"{vp[1]},{vp[0]};"
+    coords += f"{end_lng},{end_lat}"
+
+    url = f"https://router.project-osrm.org/route/v1/driving/{coords}"
+    params = {
+        "overview": "full",
+        "geometries": "polyline",
+        "alternatives": "true" if alternatives else "false",
+        "steps": "false",
+    }
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url, params=params)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if data.get("code") != "Ok":
+            return None
+
+    routes = []
+    for route in data.get("routes", []):
+        waypoints = decode_polyline(route["geometry"])
+        routes.append({
+            "waypoints": waypoints,
+            "distance_km": round(route["distance"] / 1000, 1),
+            "duration_min": round(route["duration"] / 60, 1),
+        })
+    return routes
 
 def generate_id():
     """Generate a short readable ID"""
@@ -425,42 +489,13 @@ def delete_pothole(pothole_id: str):
 
 # ─── Route Intelligence API ──────────────────────────────
 
-# --- GET /api/potholes/route — Query potholes along a route ---
-@app.get("/api/potholes/route")
-def potholes_along_route(
-    start_lat: float = Query(..., ge=-90, le=90),
-    start_lng: float = Query(..., ge=-180, le=180),
-    end_lat: float = Query(..., ge=-90, le=90),
-    end_lng: float = Query(..., ge=-180, le=180),
-    corridor_width: float = Query(100, ge=10, le=500, description="Meters from route line"),
-    via_lat: Optional[float] = Query(None, ge=-90, le=90),
-    via_lng: Optional[float] = Query(None, ge=-180, le=180),
-):
-    """
-    Find all active potholes within a corridor along a route.
-    
-    Simple straight-line route from start to end (with optional via point).
-    For real polyline routes, use POST /api/potholes/route-polyline.
-    
-    iOS usage:
-        GET /api/potholes/route?start_lat=31.02&start_lng=73.85&end_lat=31.55&end_lng=74.34
-    """
-    waypoints = [(start_lat, start_lng)]
-    if via_lat is not None and via_lng is not None:
-        waypoints.append((via_lat, via_lng))
-    waypoints.append((end_lat, end_lng))
-
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM potholes WHERE status = 'active'").fetchall()
-    conn.close()
-
-    route_potholes = find_potholes_along_route(waypoints, corridor_width, rows)
-
+def _build_route_response(route_potholes, route_info=None):
+    """Build a standard route response with summary."""
     by_severity = {"low": 0, "medium": 0, "high": 0}
     for p in route_potholes:
         by_severity[p["severity"]] = by_severity.get(p["severity"], 0) + 1
 
-    return {
+    resp = {
         "route_potholes": route_potholes,
         "summary": {
             "total": len(route_potholes),
@@ -470,24 +505,70 @@ def potholes_along_route(
             "road_quality_score": compute_road_quality_score(route_potholes),
         }
     }
+    if route_info:
+        resp["route"] = route_info
+    return resp
 
 
-# --- POST /api/potholes/route-polyline — Query with full polyline ---
-@app.post("/api/potholes/route-polyline")
-def potholes_along_polyline(
-    body: dict,
+# --- GET /api/potholes/route — OSRM-powered road-based route query ---
+@app.get("/api/potholes/route")
+async def potholes_along_route(
+    start_lat: float = Query(..., ge=-90, le=90),
+    start_lng: float = Query(..., ge=-180, le=180),
+    end_lat: float = Query(..., ge=-90, le=90),
+    end_lng: float = Query(..., ge=-180, le=180),
+    corridor_width: float = Query(50, ge=10, le=500, description="Meters from road centerline"),
+    use_road: bool = Query(True, description="Use OSRM road geometry (True) or straight line (False)"),
 ):
     """
-    Find potholes along a detailed polyline route.
+    Find all active potholes along the actual road between two points.
+    Uses OSRM (free) for real road geometry — follows actual streets, not straight lines.
+    
+    iOS usage:
+        GET /api/potholes/route?start_lat=31.52&start_lng=74.34&end_lat=31.48&end_lng=74.32
+    
+    The response includes the road polyline so you can draw it on a map.
+    """
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM potholes WHERE status = 'active'").fetchall()
+    conn.close()
+
+    if use_road:
+        osrm_routes = await get_osrm_route(start_lat, start_lng, end_lat, end_lng)
+        if not osrm_routes:
+            raise HTTPException(status_code=502, detail="Could not fetch road geometry from OSRM")
+
+        road = osrm_routes[0]
+        waypoints = road["waypoints"]
+        route_potholes = find_potholes_along_route(waypoints, corridor_width, rows)
+
+        return _build_route_response(route_potholes, route_info={
+            "distance_km": road["distance_km"],
+            "duration_min": road["duration_min"],
+            "waypoint_count": len(waypoints),
+            "polyline": [[w[0], w[1]] for w in waypoints],  # For map drawing
+        })
+    else:
+        # Fallback: straight line
+        waypoints = [(start_lat, start_lng), (end_lat, end_lng)]
+        route_potholes = find_potholes_along_route(waypoints, corridor_width, rows)
+        return _build_route_response(route_potholes)
+
+
+# --- POST /api/potholes/route-polyline — Query with custom polyline ---
+@app.post("/api/potholes/route-polyline")
+def potholes_along_polyline(body: dict):
+    """
+    Find potholes along a polyline you provide (e.g. from Apple Maps directions).
     
     Body:
     {
         "waypoints": [[lat, lng], [lat, lng], ...],
-        "corridor_width": 100
+        "corridor_width": 50
     }
     """
     waypoints = body.get("waypoints", [])
-    corridor_width = body.get("corridor_width", 100)
+    corridor_width = body.get("corridor_width", 50)
 
     if len(waypoints) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 waypoints")
@@ -499,28 +580,15 @@ def potholes_along_polyline(
     conn.close()
 
     route_potholes = find_potholes_along_route(waypoints, corridor_width, rows)
-
-    by_severity = {"low": 0, "medium": 0, "high": 0}
-    for p in route_potholes:
-        by_severity[p["severity"]] = by_severity.get(p["severity"], 0) + 1
-
-    return {
-        "route_potholes": route_potholes,
-        "summary": {
-            "total": len(route_potholes),
-            "critical": by_severity.get("high", 0),
-            "moderate": by_severity.get("medium", 0),
-            "minor": by_severity.get("low", 0),
-            "road_quality_score": compute_road_quality_score(route_potholes),
-        }
-    }
+    return _build_route_response(route_potholes)
 
 
-# --- POST /api/potholes/compare-routes — Compare multiple routes ---
+# --- POST /api/potholes/compare-routes — Compare with real road geometry ---
 @app.post("/api/potholes/compare-routes")
-def compare_routes(data: RouteCompareRequest):
+async def compare_routes(data: RouteCompareRequest):
     """
     Compare pothole density across multiple routes.
+    Each route can provide waypoints OR just start/end (OSRM fetches the road).
     
     Body:
     {
@@ -530,11 +598,12 @@ def compare_routes(data: RouteCompareRequest):
                 "waypoints": [[31.02, 73.85], [31.20, 74.10], [31.55, 74.34]]
             },
             {
-                "name": "Via Kasur",
-                "waypoints": [[31.02, 73.85], [31.18, 74.00], [31.55, 74.34]]
+                "name": "Direct Route",
+                "start": [31.02, 73.85],
+                "end": [31.55, 74.34]
             }
         ],
-        "corridor_width": 100
+        "corridor_width": 50
     }
     """
     conn = get_db()
@@ -544,26 +613,35 @@ def compare_routes(data: RouteCompareRequest):
     results = []
     for route in data.routes:
         name = route.get("name", "Unnamed")
-        waypoints = [(w[0], w[1]) for w in route.get("waypoints", [])]
+        waypoints_raw = route.get("waypoints", [])
 
-        if len(waypoints) < 2:
-            results.append({
-                "name": name,
-                "error": "Need at least 2 waypoints",
-            })
-            continue
+        # If no waypoints but has start/end, fetch from OSRM
+        if len(waypoints_raw) < 2 and "start" in route and "end" in route:
+            s, e = route["start"], route["end"]
+            osrm = await get_osrm_route(s[0], s[1], e[0], e[1])
+            if osrm:
+                waypoints = osrm[0]["waypoints"]
+                dist_km = osrm[0]["distance_km"]
+                dur_min = osrm[0]["duration_min"]
+            else:
+                results.append({"name": name, "error": "OSRM route fetch failed"})
+                continue
+        else:
+            if len(waypoints_raw) < 2:
+                results.append({"name": name, "error": "Need at least 2 waypoints"})
+                continue
+            waypoints = [(w[0], w[1]) for w in waypoints_raw]
+            dist_km = sum(
+                haversine(waypoints[i][0], waypoints[i][1], waypoints[i+1][0], waypoints[i+1][1])
+                for i in range(len(waypoints) - 1)
+            ) / 1000
+            dur_min = None
 
         route_potholes = find_potholes_along_route(waypoints, data.corridor_width, rows)
 
         by_severity = {"low": 0, "medium": 0, "high": 0}
         for p in route_potholes:
             by_severity[p["severity"]] = by_severity.get(p["severity"], 0) + 1
-
-        # Estimate route distance
-        total_dist_km = sum(
-            haversine(waypoints[i][0], waypoints[i][1], waypoints[i+1][0], waypoints[i+1][1])
-            for i in range(len(waypoints) - 1)
-        ) / 1000
 
         results.append({
             "name": name,
@@ -572,12 +650,12 @@ def compare_routes(data: RouteCompareRequest):
             "moderate": by_severity.get("medium", 0),
             "minor": by_severity.get("low", 0),
             "road_quality_score": compute_road_quality_score(route_potholes),
-            "potholes_per_km": round(len(route_potholes) / max(total_dist_km, 0.1), 2),
-            "route_distance_km": round(total_dist_km, 1),
+            "potholes_per_km": round(len(route_potholes) / max(dist_km, 0.1), 2),
+            "route_distance_km": round(dist_km, 1),
+            "duration_min": dur_min,
             "potholes": route_potholes,
         })
 
-    # Sort by road quality score (best first)
     results.sort(key=lambda x: x.get("road_quality_score", 0), reverse=True)
 
     return {
